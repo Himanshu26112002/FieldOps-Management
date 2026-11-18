@@ -1,0 +1,28 @@
+{
+  "projects": {
+    "default": "fieldops---prod"
+  },
+  "targets": {
+    "fieldops---prod": {
+      "hosting": {
+        "admin": [
+          "fieldops---prod"
+        ],
+        "sales": [
+          "fieldops-sales"
+        ]
+      }
+    },
+    "demo-fieldops": {
+      "hosting": {
+        "sales": [
+          "fieldops-sales"
+        ],
+        "admin": [
+          "demo-fieldops"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

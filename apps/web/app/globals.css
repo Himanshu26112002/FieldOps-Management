@@ -1,0 +1,152 @@
+@import "tailwindcss";
+
+/* Design tokens. Components use the semantic names (bg-card, text-muted, …), never raw colours.
+   Palette: deep navy for authority, cool slate neutrals, restrained status colours. */
+:root {
+  --background: #f4f6f9;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --surface: #eef1f6;
+  --border: #e1e6ee;
+  --muted: #5a6478;
+  --primary: #1e3a8a;
+  --primary-foreground: #ffffff;
+  --accent: #b08a3e;
+  --success: #116b3f;
+  --success-soft: #e4f3ea;
+  --warning: #8a5a00;
+  --warning-soft: #fbf0d9;
+  --danger: #b42318;
+  --danger-soft: #fdeceb;
+  /* Navigation rail stays dark in both themes. */
+  --nav: #0b1730;
+  --nav-foreground: #c9d3e6;
+  --nav-muted: #7d8aa6;
+  --nav-active: #ffffff;
+  --nav-hover: rgba(255, 255, 255, 0.06);
+  --nav-border: rgba(255, 255, 255, 0.08);
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-raised: 0 12px 32px -12px rgba(15, 23, 42, 0.25);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0f1a;
+    --foreground: #e6eaf2;
+    --card: #111827;
+    --surface: #182133;
+    --border: #243049;
+    --muted: #94a0b8;
+    --primary: #8fb0ff;
+    --primary-foreground: #0a1124;
+    --accent: #d6b46a;
+    --success: #6fd39b;
+    --success-soft: #10291c;
+    --warning: #f0bb5d;
+    --warning-soft: #2e230e;
+    --danger: #ff8f85;
+    --danger-soft: #34160f;
+    --nav: #070c17;
+    --nav-foreground: #c3cde0;
+    --nav-muted: #6f7c97;
+    --nav-active: #ffffff;
+    --nav-hover: rgba(255, 255, 255, 0.05);
+    --nav-border: rgba(255, 255, 255, 0.07);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-raised: 0 16px 40px -12px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-nav: var(--nav);
+  --color-nav-foreground: var(--nav-foreground);
+  --color-nav-muted: var(--nav-muted);
+  --color-nav-active: var(--nav-active);
+  --color-nav-hover: var(--nav-hover);
+  --color-nav-border: var(--nav-border);
+  --shadow-card: var(--shadow-card);
+  --shadow-raised: var(--shadow-raised);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+@layer base {
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.015em;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 22%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--primary) 55%, transparent);
+    outline-offset: 2px;
+  }
+
+  /* Data tables: quiet header band, generous rows, row hover, aligned figures. */
+  main table {
+    font-variant-numeric: tabular-nums;
+  }
+  main table thead tr {
+    background: var(--surface);
+  }
+  main table th {
+    padding-top: 0.625rem;
+    padding-bottom: 0.625rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+  }
+  main table th:first-child,
+  main table td:first-child {
+    padding-left: 1rem;
+  }
+  main table th:last-child,
+  main table td:last-child {
+    padding-right: 1rem;
+  }
+  main table tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background-color 120ms ease;
+  }
+  main table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  main table tbody tr:hover {
+    background: color-mix(in oklab, var(--surface) 55%, transparent);
+  }
+  main table td {
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}

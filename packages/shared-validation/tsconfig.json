@@ -1,0 +1,4 @@
+{
+  "extends": "@fieldops/shared-config/tsconfig.base.json",
+  "include": ["src"]
+}

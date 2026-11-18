@@ -1,0 +1,41 @@
+{
+  "name": "fieldops-ai",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/mobile",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:web": "npm run dev -w @fieldops/web",
+    "start:mobile": "npm run start -w @fieldops/mobile",
+    "build:web": "npm run build -w @fieldops/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "emulators": "firebase emulators:start --project demo-fieldops --export-on-exit=firebase/emulator-data",
+    "emulators:reset": "node scripts/development/reset-emulator-data.mjs",
+    "test:rules": "node scripts/test-rules.mjs",
+    "emulators:persist": "firebase emulators:start --project demo-fieldops --import=firebase/emulator-data --export-on-exit=firebase/emulator-data",
+    "seed:emulators": "node scripts/development/seed-emulators.mjs"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
+    "firebase": "^13.1.0",
+    "firebase-admin": "^14.5.0",
+    "firebase-tools": "^15.34.2",
+    "prettier": "^3.9.10",
+    "vitest": "^5.0.5"
+  },
+  "optionalDependencies": {
+    "@rolldown/binding-win32-x64-msvc": "^1.2.16"
+  },
+  "overrides": {
+    "lightningcss": "1.33.0"
+  }
+}

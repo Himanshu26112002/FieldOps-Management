@@ -1,0 +1,23 @@
+# Files EAS Build does not upload (builds run without git; see apps/mobile/eas.json).
+node_modules/
+**/node_modules/
+.git/
+*.msi
+apps/web/out/
+apps/web/.next/
+apps/web/test-results/
+firebase/emulator-data/
+docs/
+**/.expo/
+**/dist/
+**/*.log
+**/.env
+**/.env.*
+!**/.env.example
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.pem
+**/dist-web/

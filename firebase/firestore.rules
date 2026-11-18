@@ -1,0 +1,842 @@
+rules_version = '2';
+
+// FieldOps AI authorization layer.
+//
+// Invariants:
+//  * Every business document is scoped to one organization.
+//  * Authority comes from memberships/{uid}; profile.role is display data only.
+//  * Membership provisioning is closed to non-admins. Firebase Auth sign-up may
+//    create an unprovisioned login, but only an active administrator can create
+//    memberships; the owner bootstraps the first administrator in Console.
+//  * Salespeople can only read/write their own visits and assigned clients.
+//  * Visit lifecycle transitions and approval/return fields are enforced here;
+//    the UI is not trusted.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ---------------------------------------------------------------- helpers
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function membershipPath(uid) {
+      return /databases/$(database)/documents/memberships/$(uid);
+    }
+
+    function membershipData() {
+      // A missing membership makes this read fail, which denies the request.
+      return get(membershipPath(request.auth.uid)).data;
+    }
+
+    function memberOf(orgId) {
+      return signedIn() && membershipData().orgId == orgId;
+    }
+
+    function activeMemberOf(orgId) {
+      return memberOf(orgId) && membershipData().status == 'ACTIVE';
+    }
+
+    function isAdmin(orgId) {
+      return activeMemberOf(orgId) && membershipData().role == 'ADMIN';
+    }
+
+    function isSalesperson(orgId) {
+      return activeMemberOf(orgId) && membershipData().role == 'USER';
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function onlyChanged(keys) {
+      return changedKeys().hasOnly(keys);
+    }
+
+    function unchanged(keys) {
+      return !changedKeys().hasAny(keys);
+    }
+
+    function clientPath(orgId, clientId) {
+      return /databases/$(database)/documents/organizations/$(orgId)/clients/$(clientId);
+    }
+
+    function clientData(orgId, clientId) {
+      return get(clientPath(orgId, clientId)).data;
+    }
+
+    function activeClient(orgId, clientId) {
+      return clientData(orgId, clientId).status == 'ACTIVE';
+    }
+
+    function isAssigned(orgId, clientId) {
+      return request.auth.uid in clientData(orgId, clientId).assignedUserIds;
+    }
+
+    function userPath(orgId, uid) {
+      return /databases/$(database)/documents/organizations/$(orgId)/users/$(uid);
+    }
+
+    function activeUser(orgId, uid) {
+      return get(userPath(orgId, uid)).data.status == 'ACTIVE';
+    }
+
+    function visitPath(orgId, visitId) {
+      return /databases/$(database)/documents/organizations/$(orgId)/visits/$(visitId);
+    }
+
+    function visitData(orgId, visitId) {
+      return get(visitPath(orgId, visitId)).data;
+    }
+
+    function isVisitOwner(orgId, visitId) {
+      return isSalesperson(orgId)
+        && visitData(orgId, visitId).userId == request.auth.uid;
+    }
+
+    function isGpsFix(g) {
+      return g != null
+        && g.keys().hasOnly(['latitude', 'longitude', 'accuracyMeters', 'capturedAt'])
+        && g.latitude is number && g.latitude >= -90 && g.latitude <= 90
+        && g.longitude is number && g.longitude >= -180 && g.longitude <= 180
+        && g.accuracyMeters is number && g.accuracyMeters >= 0 && g.accuracyMeters <= 100000
+        && g.capturedAt is timestamp;
+    }
+
+    function isReport(r) {
+      return r == null || (
+        r.keys().hasOnly([
+          'summary', 'outcome', 'activities', 'productsDiscussed', 'competitorInfo',
+          'customerFeedback', 'nextAction', 'followupRequired', 'followupDate'
+        ])
+        && r.summary is string && r.summary.size() >= 10 && r.summary.size() <= 2000
+        && r.outcome in ['INTERESTED', 'FOLLOW_UP_REQUIRED', 'ORDER_PLACED', 'INFORMATION_ONLY', 'NOT_INTERESTED']
+        && r.activities is list && r.activities.size() >= 1 && r.activities.size() <= 20
+        && r.productsDiscussed is string && r.productsDiscussed.size() <= 500
+        && r.competitorInfo is string && r.competitorInfo.size() <= 500
+        && r.customerFeedback is string && r.customerFeedback.size() <= 1000
+        && r.nextAction is string && r.nextAction.size() <= 500
+        && r.followupRequired is bool
+        && (r.followupRequired == true
+          ? (r.followupDate is string && r.followupDate.size() == 10)
+          : r.followupDate == null)
+      );
+    }
+
+    function validReportKey(r) {
+      return r == null || r.keys().hasAll([
+        'summary', 'outcome', 'activities', 'productsDiscussed', 'competitorInfo',
+        'customerFeedback', 'nextAction', 'followupRequired', 'followupDate'
+      ]);
+    }
+
+    function baseVisitFields() {
+      return [
+        'orgId', 'clientId', 'clientName', 'clientAddress', 'clientCity',
+        'userId', 'userName', 'origin', 'status', 'scheduledFor', 'scheduledBy',
+        'checkIn', 'checkOut', 'report', 'photoCount', 'revisionCount',
+        'submittedAt', 'approvedAt', 'approvedBy', 'returnedAt', 'returnedBy',
+        'returnReason', 'cancelledAt', 'cancelledBy', 'cancelReason',
+        'createdAt', 'createdBy', 'updatedAt'
+      ];
+    }
+
+    // A new visit carries no approval/return/cancel data and bounded address snapshots.
+    function cleanDecisionFields(v) {
+      return v.approvedBy == null
+        && v.returnedBy == null
+        && v.returnReason == ''
+        && v.cancelledBy == null
+        && v.cancelReason == ''
+        && v.clientAddress is string && v.clientAddress.size() <= 500
+        && v.clientCity is string && v.clientCity.size() <= 120;
+    }
+
+    function immutableVisitFields() {
+      return [
+        'orgId', 'clientId', 'clientName', 'clientAddress', 'clientCity',
+        'userId', 'userName', 'origin', 'createdAt', 'createdBy'
+      ];
+    }
+
+    // ---------------------------------------------------------- memberships
+    match /memberships/{uid} {
+      allow read: if signedIn() && (
+        (request.auth.uid == uid && resource.data.status == 'ACTIVE')
+        || (activeMemberOf(resource.data.orgId) && membershipData().role == 'ADMIN')
+        // Salespeople may look up administrators in their own org, needed to
+        // address submission/follow-up notifications.
+        || (isSalesperson(resource.data.orgId)
+          && resource.data.role == 'ADMIN'
+          && resource.data.status == 'ACTIVE')
+      );
+
+      allow create: if isAdmin(request.resource.data.orgId)
+        && uid != request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'orgId', 'role', 'status', 'createdAt', 'updatedAt', 'createdBy'])
+        && request.resource.data.keys().hasAll(['uid', 'orgId', 'role', 'status', 'createdAt', 'updatedAt', 'createdBy'])
+        && request.resource.data.uid == uid
+        && request.resource.data.role in ['ADMIN', 'USER']
+        && request.resource.data.status == 'ACTIVE'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow update: if isAdmin(resource.data.orgId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.orgId == resource.data.orgId
+        && unchanged(['uid', 'orgId', 'createdAt', 'createdBy'])
+        && request.resource.data.role in ['ADMIN', 'USER']
+        && request.resource.data.status in ['ACTIVE', 'INACTIVE']
+        && request.resource.data.updatedAt == request.time
+        // An administrator cannot change their own role or deactivate themselves.
+        && (uid != request.auth.uid || (
+          request.resource.data.role == resource.data.role
+          && request.resource.data.status == resource.data.status
+        ));
+
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------- organization
+    match /organizations/{orgId} {
+      allow read: if activeMemberOf(orgId);
+
+      // Created by the seed script / Firebase Console only.
+      allow create: if false;
+
+      allow update: if isAdmin(orgId)
+        && unchanged(['createdAt', 'createdBy'])
+        && request.resource.data.keys().hasOnly(['name', 'settings', 'createdAt', 'updatedAt', 'createdBy'])
+        && request.resource.data.name is string
+        && request.resource.data.settings is map
+        && request.resource.data.updatedAt == request.time;
+
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------- profiles
+    match /organizations/{orgId}/users/{uid} {
+      allow read: if isAdmin(orgId) || (isSelf(uid) && activeMemberOf(orgId));
+
+      allow create: if isAdmin(orgId)
+        && uid != request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'uid', 'orgId', 'fullName', 'email', 'phone', 'employeeCode', 'role',
+          'status', 'createdAt', 'updatedAt', 'createdBy', 'lastLoginAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'uid', 'orgId', 'fullName', 'email', 'phone', 'employeeCode', 'role',
+          'status', 'createdAt', 'updatedAt', 'createdBy'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.orgId == orgId
+        && request.resource.data.role in ['ADMIN', 'USER']
+        && request.resource.data.status == 'ACTIVE'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
+        && getAfter(membershipPath(uid)).data.orgId == orgId
+        && getAfter(membershipPath(uid)).data.role == request.resource.data.role;
+
+      allow update: if isAdmin(orgId)
+        && request.resource.data.keys().hasOnly([
+          'uid', 'orgId', 'fullName', 'email', 'phone', 'employeeCode', 'role',
+          'status', 'createdAt', 'updatedAt', 'createdBy', 'lastLoginAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'uid', 'orgId', 'fullName', 'email', 'phone', 'employeeCode', 'role',
+          'status', 'createdAt', 'updatedAt', 'createdBy'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.orgId == orgId
+        && unchanged(['uid', 'orgId', 'email', 'createdAt', 'createdBy'])
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() >= 2
+        && request.resource.data.fullName.size() <= 120
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 30
+        && request.resource.data.employeeCode is string
+        && request.resource.data.employeeCode.size() >= 2
+        && request.resource.data.employeeCode.size() <= 40
+        && getAfter(membershipPath(uid)).data.orgId == orgId
+        && getAfter(membershipPath(uid)).data.role == request.resource.data.role
+        && getAfter(membershipPath(uid)).data.status == request.resource.data.status
+        && (uid != request.auth.uid || request.resource.data.status == resource.data.status);
+
+      // A salesperson may keep their own contact details current.
+      allow update: if isSelf(uid)
+        && isSalesperson(orgId)
+        && request.resource.data.keys().hasOnly([
+          'uid', 'orgId', 'fullName', 'email', 'phone', 'employeeCode', 'role',
+          'status', 'createdAt', 'updatedAt', 'createdBy', 'lastLoginAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'uid', 'orgId', 'fullName', 'email', 'phone', 'employeeCode', 'role',
+          'status', 'createdAt', 'updatedAt', 'createdBy'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.orgId == orgId
+        && unchanged([
+          'uid', 'orgId', 'email', 'employeeCode', 'role', 'status',
+          'createdAt', 'createdBy', 'lastLoginAt'
+        ])
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() >= 2
+        && request.resource.data.fullName.size() <= 120
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 30;
+
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------- clients
+    match /organizations/{orgId}/clients/{clientId} {
+      // Use resource.data (not a get) so list/query evaluation stays within the
+      // per-request access-call limit while still scoping salespeople.
+      allow read: if isAdmin(orgId)
+        || (isSalesperson(orgId) && request.auth.uid in resource.data.assignedUserIds);
+
+      allow create: if isAdmin(orgId)
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'name', 'contactPerson', 'phone', 'email', 'addressLine1',
+          'addressLine2', 'city', 'state', 'postalCode', 'category', 'notes',
+          'status', 'geo', 'assignedUserIds', 'createdBy', 'createdAt',
+          'updatedAt', 'lastVisitAt', 'nextFollowupAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'orgId', 'name', 'contactPerson', 'phone', 'email', 'addressLine1',
+          'addressLine2', 'city', 'state', 'postalCode', 'category', 'notes',
+          'status', 'geo', 'assignedUserIds', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.orgId == orgId
+        && request.resource.data.name is string && request.resource.data.name.size() >= 2
+        && request.resource.data.assignedUserIds is list
+        && request.resource.data.assignedUserIds.size() == 0
+        && request.resource.data.status in ['ACTIVE', 'INACTIVE']
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow update: if isAdmin(orgId)
+        && request.resource.data.orgId == orgId
+        && unchanged(['orgId', 'createdAt', 'createdBy'])
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.status in ['ACTIVE', 'INACTIVE']
+        && request.resource.data.assignedUserIds is list
+        && request.resource.data.assignedUserIds.size() <= 50;
+
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------------- assignments
+    match /organizations/{orgId}/client_assignments/{assignmentId} {
+      allow read: if isAdmin(orgId)
+        || (isSalesperson(orgId) && resource.data.userId == request.auth.uid);
+
+      allow create: if isAdmin(orgId)
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'clientId', 'clientName', 'userId', 'userName', 'status',
+          'assignedBy', 'assignedAt', 'endedBy', 'endedAt', 'endReason'
+        ])
+        && request.resource.data.keys().hasAll([
+          'orgId', 'clientId', 'clientName', 'userId', 'userName', 'status',
+          'assignedBy', 'assignedAt'
+        ])
+        && request.resource.data.orgId == orgId
+        && request.resource.data.status == 'ACTIVE'
+        && activeClient(orgId, request.resource.data.clientId)
+        && activeUser(orgId, request.resource.data.userId)
+        && request.resource.data.clientName == clientData(orgId, request.resource.data.clientId).name
+        && request.resource.data.userName == get(userPath(orgId, request.resource.data.userId)).data.fullName
+        && request.resource.data.assignedBy == request.auth.uid
+        && request.resource.data.assignedAt == request.time;
+
+      allow update: if isAdmin(orgId)
+        && resource.data.status == 'ACTIVE'
+        && request.resource.data.status == 'ENDED'
+        && unchanged([
+          'orgId', 'clientId', 'clientName', 'userId', 'userName',
+          'assignedBy', 'assignedAt'
+        ])
+        && request.resource.data.endedBy == request.auth.uid
+        && request.resource.data.endedAt == request.time
+        && request.resource.data.endReason is string
+        && request.resource.data.endReason.size() <= 500;
+
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------------------- visits
+    match /organizations/{orgId}/visits/{visitId} {
+      allow read: if isAdmin(orgId)
+        || (isSalesperson(orgId) && resource.data.userId == request.auth.uid);
+
+      // Administrator schedules a visit for a salesperson.
+      allow create: if isAdmin(orgId)
+        && request.resource.data.keys().hasOnly(baseVisitFields())
+        && request.resource.data.keys().hasAll(baseVisitFields())
+        && request.resource.data.orgId == orgId
+        && request.resource.data.origin == 'SCHEDULED'
+        && request.resource.data.status == 'SCHEDULED'
+        && activeClient(orgId, request.resource.data.clientId)
+        && activeUser(orgId, request.resource.data.userId)
+        && request.resource.data.clientName == clientData(orgId, request.resource.data.clientId).name
+        && request.resource.data.userName == get(userPath(orgId, request.resource.data.userId)).data.fullName
+        && request.resource.data.scheduledFor is timestamp
+        && request.resource.data.scheduledBy == request.auth.uid
+        && request.resource.data.checkIn == null
+        && request.resource.data.checkOut == null
+        && request.resource.data.report == null
+        && request.resource.data.photoCount == 0
+        && request.resource.data.revisionCount == 0
+        && request.resource.data.submittedAt == null
+        && request.resource.data.approvedAt == null
+        && request.resource.data.returnedAt == null
+        && request.resource.data.cancelledAt == null
+        && cleanDecisionFields(request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.createdBy == request.auth.uid;
+
+      // Salesperson starts a visit (ad hoc or from their own schedule).
+      allow create: if isSalesperson(orgId)
+        && request.resource.data.keys().hasOnly(baseVisitFields())
+        && request.resource.data.keys().hasAll(baseVisitFields())
+        && request.resource.data.orgId == orgId
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.userName == get(userPath(orgId, request.auth.uid)).data.fullName
+        && activeClient(orgId, request.resource.data.clientId)
+        && isAssigned(orgId, request.resource.data.clientId)
+        && request.resource.data.clientName == clientData(orgId, request.resource.data.clientId).name
+        && request.resource.data.checkOut == null
+        && request.resource.data.report == null
+        && request.resource.data.photoCount == 0
+        && request.resource.data.revisionCount == 0
+        && request.resource.data.approvedAt == null
+        && request.resource.data.returnedAt == null
+        && request.resource.data.cancelledAt == null
+        && cleanDecisionFields(request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.createdBy == request.auth.uid
+        && (
+          (
+            request.resource.data.origin == 'AD_HOC'
+            && request.resource.data.status == 'IN_PROGRESS'
+            && request.resource.data.scheduledFor == null
+            && request.resource.data.scheduledBy == null
+            && isGpsFix(request.resource.data.checkIn)
+            && request.resource.data.checkIn.capturedAt == request.time
+            && request.resource.data.submittedAt == null
+          )
+          || (
+            request.resource.data.origin == 'SCHEDULED'
+            && request.resource.data.status == 'SCHEDULED'
+            && request.resource.data.scheduledFor is timestamp
+            && request.resource.data.scheduledBy == request.auth.uid
+            && request.resource.data.checkIn == null
+            && request.resource.data.submittedAt == null
+          )
+        );
+
+      // Administrator decisions: approve/return a submission, or cancel.
+      allow update: if isAdmin(orgId)
+        && request.resource.data.keys().hasOnly(baseVisitFields())
+        && unchanged(immutableVisitFields())
+        && unchanged(['report', 'checkIn', 'checkOut', 'photoCount', 'revisionCount', 'userId', 'clientId'])
+        && request.resource.data.updatedAt == request.time
+        && (
+          (
+            resource.data.status == 'SUBMITTED'
+            && request.resource.data.status == 'APPROVED'
+            && request.resource.data.approvedBy == request.auth.uid
+            && request.resource.data.approvedAt == request.time
+            && request.resource.data.returnedAt == resource.data.returnedAt
+            && request.resource.data.cancelledAt == resource.data.cancelledAt
+          )
+          || (
+            resource.data.status == 'SUBMITTED'
+            && request.resource.data.status == 'RETURNED'
+            && request.resource.data.returnedBy == request.auth.uid
+            && request.resource.data.returnedAt == request.time
+            && request.resource.data.returnReason is string
+            && request.resource.data.returnReason.size() >= 5
+            && request.resource.data.returnReason.size() <= 1000
+            && request.resource.data.approvedAt == resource.data.approvedAt
+            && request.resource.data.cancelledAt == resource.data.cancelledAt
+          )
+          || (
+            // RETURNED is cancellable so a correction owned by a departed salesperson can be closed.
+            resource.data.status in ['SCHEDULED', 'IN_PROGRESS', 'RETURNED']
+            && request.resource.data.status == 'CANCELLED'
+            && request.resource.data.cancelledBy == request.auth.uid
+            && request.resource.data.cancelledAt == request.time
+            && request.resource.data.cancelReason is string
+            && request.resource.data.cancelReason.size() >= 3
+            && request.resource.data.cancelReason.size() <= 1000
+          )
+        );
+
+      // Salesperson lifecycle: start, edit draft report, submit, resubmit, cancel.
+      allow update: if isSalesperson(orgId)
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly(baseVisitFields())
+        && unchanged(immutableVisitFields())
+        // Administrator decision and scheduling fields are never writable by the salesperson.
+        && unchanged(['approvedAt', 'approvedBy', 'returnedAt', 'returnedBy', 'returnReason',
+          'scheduledFor', 'scheduledBy'])
+        // Only the cancel branches may touch cancellation fields; only resubmit bumps revisionCount.
+        && (request.resource.data.status == 'CANCELLED'
+          || unchanged(['cancelledAt', 'cancelledBy', 'cancelReason']))
+        && (request.resource.data.status == 'SUBMITTED' && resource.data.status == 'RETURNED'
+          || unchanged(['revisionCount']))
+        // photoCount moves by at most one per write (photo create/delete rules pin the exact value).
+        && request.resource.data.photoCount >= 0
+        && request.resource.data.photoCount <= 10
+        && request.resource.data.photoCount >= resource.data.photoCount - 1
+        && request.resource.data.photoCount <= resource.data.photoCount + 1
+        && (unchanged(['photoCount']) || resource.data.status in ['IN_PROGRESS', 'RETURNED'])
+        && request.resource.data.updatedAt == request.time
+        && (
+          // Start a scheduled visit.
+          (
+            resource.data.status == 'SCHEDULED'
+            && request.resource.data.status == 'IN_PROGRESS'
+            && isGpsFix(request.resource.data.checkIn)
+            && request.resource.data.checkIn.capturedAt == request.time
+            && request.resource.data.checkOut == resource.data.checkOut
+            && request.resource.data.report == resource.data.report
+            && request.resource.data.submittedAt == resource.data.submittedAt
+          )
+          // Keep a draft report while the visit is open.
+          || (
+            resource.data.status in ['IN_PROGRESS', 'RETURNED']
+            && request.resource.data.status == resource.data.status
+            && request.resource.data.checkIn == resource.data.checkIn
+            && request.resource.data.checkOut == resource.data.checkOut
+            && isReport(request.resource.data.report)
+            && validReportKey(request.resource.data.report)
+            && request.resource.data.submittedAt == resource.data.submittedAt
+          )
+          // Submit for the first time.
+          || (
+            resource.data.status == 'IN_PROGRESS'
+            && request.resource.data.status == 'SUBMITTED'
+            && request.resource.data.checkIn == resource.data.checkIn
+            && isReport(request.resource.data.report)
+            && validReportKey(request.resource.data.report)
+            && request.resource.data.report != null
+            && isGpsFix(request.resource.data.checkOut)
+            && request.resource.data.checkOut.capturedAt == request.time
+            && request.resource.data.submittedAt == request.time
+            && request.resource.data.revisionCount == resource.data.revisionCount
+          )
+          // Resubmit after a correction request; check-out is not recaptured.
+          || (
+            resource.data.status == 'RETURNED'
+            && request.resource.data.status == 'SUBMITTED'
+            && request.resource.data.checkIn == resource.data.checkIn
+            && request.resource.data.checkOut == resource.data.checkOut
+            && isReport(request.resource.data.report)
+            && validReportKey(request.resource.data.report)
+            && request.resource.data.report != null
+            && request.resource.data.submittedAt == request.time
+            && request.resource.data.revisionCount == resource.data.revisionCount + 1
+          )
+          // Cancel. A salesperson cannot cancel an administrator-scheduled visit (A5).
+          || (
+            resource.data.status == 'SCHEDULED'
+            && request.resource.data.status == 'CANCELLED'
+            && resource.data.scheduledBy == request.auth.uid
+            && request.resource.data.checkIn == resource.data.checkIn
+            && request.resource.data.checkOut == resource.data.checkOut
+            && request.resource.data.cancelledBy == request.auth.uid
+            && request.resource.data.cancelledAt == request.time
+            && request.resource.data.cancelReason is string
+            && request.resource.data.cancelReason.size() >= 3
+            && request.resource.data.cancelReason.size() <= 1000
+          )
+          || (
+            resource.data.status == 'IN_PROGRESS'
+            && resource.data.origin == 'AD_HOC'
+            && request.resource.data.status == 'CANCELLED'
+            && request.resource.data.checkIn == resource.data.checkIn
+            && request.resource.data.checkOut == resource.data.checkOut
+            && request.resource.data.cancelledBy == request.auth.uid
+            && request.resource.data.cancelledAt == request.time
+            && request.resource.data.cancelReason is string
+            && request.resource.data.cancelReason.size() >= 3
+            && request.resource.data.cancelReason.size() <= 1000
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // --------------------------------------------------------------- photos
+    match /organizations/{orgId}/visits/{visitId}/photos/{photoId} {
+      allow read: if isAdmin(orgId)
+        || (isSalesperson(orgId)
+          && visitData(orgId, visitId).userId == request.auth.uid);
+
+      function canWritePhoto() {
+        return isSalesperson(orgId)
+          && visitData(orgId, visitId).userId == request.auth.uid
+          && visitData(orgId, visitId).status in ['IN_PROGRESS', 'RETURNED'];
+      }
+
+      allow create: if canWritePhoto()
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'visitId', 'contentType', 'data', 'sizeBytes', 'caption', 'uploadedBy', 'createdAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'orgId', 'visitId', 'contentType', 'data', 'sizeBytes', 'caption', 'uploadedBy', 'createdAt'
+        ])
+        && request.resource.data.orgId == orgId
+        && request.resource.data.visitId == visitId
+        && request.resource.data.contentType == 'image/jpeg'
+        && request.resource.data.data is string
+        && request.resource.data.data.size() <= 500000
+        && request.resource.data.sizeBytes is int
+        && request.resource.data.sizeBytes > 0
+        && request.resource.data.sizeBytes <= 350000
+        && request.resource.data.caption is string
+        && request.resource.data.caption.size() <= 300
+        && request.resource.data.uploadedBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        // Every photo is counted: the visit's photoCount rises by exactly one in the same batch,
+        // and the visit update rule caps photoCount, which caps the number of photos.
+        && getAfter(visitPath(orgId, visitId)).data.photoCount == visitData(orgId, visitId).photoCount + 1;
+
+      allow update: if false;
+
+      allow delete: if canWritePhoto()
+        && getAfter(visitPath(orgId, visitId)).data.photoCount == visitData(orgId, visitId).photoCount - 1;
+    }
+
+    // ------------------------------------------------------------ revisions
+    match /organizations/{orgId}/visits/{visitId}/revisions/{revisionId} {
+      allow read: if isAdmin(orgId)
+        || (isSalesperson(orgId) && isVisitOwner(orgId, visitId));
+
+      allow create: if isSalesperson(orgId)
+        && isVisitOwner(orgId, visitId)
+        && visitData(orgId, visitId).status == 'RETURNED'
+        && getAfter(visitPath(orgId, visitId)).data.status == 'SUBMITTED'
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'visitId', 'revisionNumber', 'previousReport', 'newReport',
+          'returnReason', 'editedBy', 'createdAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'orgId', 'visitId', 'revisionNumber', 'previousReport', 'newReport',
+          'returnReason', 'editedBy', 'createdAt'
+        ])
+        && request.resource.data.orgId == orgId
+        && request.resource.data.visitId == visitId
+        && request.resource.data.revisionNumber is int
+        && request.resource.data.revisionNumber >= 1
+        // The revision must describe the real transition happening in this batch.
+        && request.resource.data.revisionNumber == getAfter(visitPath(orgId, visitId)).data.revisionCount
+        && request.resource.data.previousReport == visitData(orgId, visitId).report
+        && request.resource.data.newReport == getAfter(visitPath(orgId, visitId)).data.report
+        && request.resource.data.returnReason == visitData(orgId, visitId).returnReason
+        && isReport(request.resource.data.newReport)
+        && request.resource.data.newReport != null
+        && request.resource.data.returnReason is string
+        && request.resource.data.editedBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------- followups
+    match /organizations/{orgId}/followups/{followupId} {
+      allow read: if isAdmin(orgId)
+        || (isSalesperson(orgId) && resource.data.userId == request.auth.uid);
+
+      allow create: if (isAdmin(orgId)
+          || (isSalesperson(orgId)
+            && request.resource.data.userId == request.auth.uid
+            && activeClient(orgId, request.resource.data.clientId)
+            && isAssigned(orgId, request.resource.data.clientId)))
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'clientId', 'clientName', 'userId', 'userName', 'visitId',
+          'title', 'notes', 'dueDate', 'status', 'completedAt', 'completedBy',
+          'completionNote', 'createdAt', 'createdBy', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'orgId', 'clientId', 'clientName', 'userId', 'userName', 'visitId',
+          'title', 'notes', 'dueDate', 'status', 'completedAt', 'completedBy',
+          'completionNote', 'createdAt', 'createdBy', 'updatedAt'
+        ])
+        && request.resource.data.orgId == orgId
+        && activeClient(orgId, request.resource.data.clientId)
+        && activeUser(orgId, request.resource.data.userId)
+        && request.resource.data.clientName == clientData(orgId, request.resource.data.clientId).name
+        && request.resource.data.userName == get(userPath(orgId, request.resource.data.userId)).data.fullName
+        && request.resource.data.title is string && request.resource.data.title.size() >= 3
+        && request.resource.data.title.size() <= 160
+        && request.resource.data.notes is string && request.resource.data.notes.size() <= 1000
+        && (request.resource.data.visitId == null || request.resource.data.visitId is string)
+        && request.resource.data.dueDate is string && request.resource.data.dueDate.size() == 10
+        && request.resource.data.status == 'OPEN'
+        && request.resource.data.completedAt == null
+        && request.resource.data.completedBy == null
+        && request.resource.data.completionNote is string
+        && request.resource.data.completionNote.size() <= 1000
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow update: if (isAdmin(orgId) || (isSalesperson(orgId) && resource.data.userId == request.auth.uid))
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'clientId', 'clientName', 'userId', 'userName', 'visitId',
+          'title', 'notes', 'dueDate', 'status', 'completedAt', 'completedBy',
+          'completionNote', 'createdAt', 'createdBy', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'orgId', 'clientId', 'clientName', 'userId', 'userName', 'visitId',
+          'title', 'notes', 'dueDate', 'status', 'completedAt', 'completedBy',
+          'completionNote', 'createdAt', 'createdBy', 'updatedAt'
+        ])
+        && request.resource.data.orgId == orgId
+        && unchanged([
+          'orgId', 'clientId', 'clientName', 'userId', 'userName', 'visitId',
+          'createdAt', 'createdBy'
+        ])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3
+        && request.resource.data.title.size() <= 160
+        && request.resource.data.notes is string
+        && request.resource.data.notes.size() <= 1000
+        && request.resource.data.dueDate is string
+        && request.resource.data.dueDate.size() == 10
+        && request.resource.data.completionNote is string
+        && request.resource.data.completionNote.size() <= 1000
+        && request.resource.data.updatedAt == request.time
+        // A salesperson may not retitle or cancel a follow-up an administrator assigned to them.
+        && (isAdmin(orgId) || resource.data.createdBy == request.auth.uid || unchanged(['title']))
+        && (isAdmin(orgId) || resource.data.createdBy == request.auth.uid
+          || request.resource.data.status != 'CANCELLED')
+        && (
+          (
+            resource.data.status == 'OPEN'
+            && request.resource.data.status == 'DONE'
+            && request.resource.data.completedAt == request.time
+            && request.resource.data.completedBy == request.auth.uid
+          )
+          || (
+            resource.data.status == 'OPEN'
+            && request.resource.data.status == 'CANCELLED'
+            && request.resource.data.completedAt == null
+            && request.resource.data.completedBy == null
+            && request.resource.data.completionNote == resource.data.completionNote
+          )
+          || (
+            resource.data.status == 'OPEN'
+            && request.resource.data.status == 'OPEN'
+            && request.resource.data.completedAt == resource.data.completedAt
+            && request.resource.data.completedBy == resource.data.completedBy
+            && request.resource.data.completionNote == resource.data.completionNote
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------- notifications
+    match /organizations/{orgId}/notifications/{notificationId} {
+      allow read: if isSelf(resource.data.recipientUid) && activeMemberOf(orgId);
+
+      // Admins can notify anyone in the org. Salespeople can only raise the
+      // events that need administrator attention (no arbitrary notifications).
+      allow create: if (isAdmin(orgId)
+          || (isSalesperson(orgId)
+            && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.type in ['VISIT_SUBMITTED', 'VISIT_RESUBMITTED', 'FOLLOWUP_COMPLETED']
+            && request.resource.data.entityType in ['VISIT', 'FOLLOWUP']
+            && getAfter(membershipPath(request.resource.data.recipientUid)).data.role == 'ADMIN'))
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'recipientUid', 'type', 'title', 'body', 'entityType',
+          'entityId', 'readAt', 'createdAt', 'createdBy'
+        ])
+        && request.resource.data.keys().hasAll([
+          'orgId', 'recipientUid', 'type', 'title', 'body', 'entityType',
+          'entityId', 'readAt', 'createdAt', 'createdBy'
+        ])
+        && request.resource.data.orgId == orgId
+        && request.resource.data.recipientUid is string
+        // getAfter: the recipient's membership may be created in the same batch
+        // (welcome notification when an administrator provisions an account).
+        && getAfter(membershipPath(request.resource.data.recipientUid)).data.orgId == orgId
+        && getAfter(membershipPath(request.resource.data.recipientUid)).data.status == 'ACTIVE'
+        && request.resource.data.title is string && request.resource.data.title.size() <= 160
+        && request.resource.data.body is string && request.resource.data.body.size() <= 1000
+        && (request.resource.data.entityType == null
+          || (request.resource.data.entityType is string && request.resource.data.entityType.size() <= 40))
+        && (request.resource.data.entityId == null
+          || (request.resource.data.entityId is string && request.resource.data.entityId.size() <= 200))
+        && request.resource.data.readAt == null
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow update: if isSelf(resource.data.recipientUid) && activeMemberOf(orgId)
+        && unchanged([
+          'orgId', 'recipientUid', 'type', 'title', 'body', 'entityType',
+          'entityId', 'createdAt', 'createdBy'
+        ])
+        && request.resource.data.readAt == request.time;
+
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------- audit log
+    match /organizations/{orgId}/audit_logs/{logId} {
+      allow read: if isAdmin(orgId);
+
+      allow create: if activeMemberOf(orgId)
+        && request.resource.data.keys().hasOnly([
+          'orgId', 'actorId', 'actorRole', 'action', 'entityType', 'entityId',
+          'summary', 'metadata', 'createdAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'orgId', 'actorId', 'actorRole', 'action', 'entityType', 'entityId',
+          'summary', 'metadata', 'createdAt'
+        ])
+        && request.resource.data.orgId == orgId
+        && request.resource.data.actorId == request.auth.uid
+        && request.resource.data.actorRole == membershipData().role
+        && request.resource.data.action in [
+          'LOGIN', 'CLIENT_CREATED', 'CLIENT_UPDATED', 'CLIENT_DEACTIVATED',
+          'CLIENT_ASSIGNED', 'CLIENT_UNASSIGNED', 'USER_CREATED', 'USER_UPDATED',
+          'USER_DEACTIVATED', 'VISIT_SCHEDULED', 'VISIT_STARTED', 'VISIT_SUBMITTED',
+          'VISIT_RESUBMITTED', 'VISIT_APPROVED', 'VISIT_RETURNED', 'VISIT_CANCELLED',
+          'FOLLOWUP_CREATED', 'FOLLOWUP_COMPLETED', 'FOLLOWUP_CANCELLED',
+          'ORG_SETTINGS_UPDATED'
+        ]
+        && request.resource.data.entityType in ['CLIENT', 'USER', 'VISIT', 'FOLLOWUP', 'ORGANIZATION']
+        && request.resource.data.summary is string
+        && request.resource.data.summary.size() >= 1
+        && request.resource.data.summary.size() <= 500
+        && request.resource.data.entityId is string
+        && request.resource.data.entityId.size() <= 200
+        && (request.resource.data.metadata == null
+          || (request.resource.data.metadata is map && request.resource.data.metadata.size() <= 20))
+        && request.resource.data.createdAt == request.time;
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Deny everything that is not explicitly allowed above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Environment / credentials — never commit
+.env
+.env.*
+!.env.example
+*.pem
+service-account*.json
+*-adminsdk-*.json
+
+# Firebase native config files (not secret, but kept out of the repo by policy)
+google-services.json
+GoogleService-Info.plist
+
+# Build output
+.next/
+out/
+dist/
+build/
+coverage/
+.turbo/
+
+# Expo / React Native
+.expo/
+apps/mobile/android/
+apps/mobile/ios/
+*.jks
+*.keystore
+*.p8
+*.p12
+*.mobileprovision
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+firebase/emulator-data/*
+!firebase/emulator-data/.gitkeep
+
+# Tests
+playwright-report/
+test-results/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.log
+OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.msi 
