@@ -381,7 +381,14 @@ export default function ClientsPage() {
 
             {isAdmin ? (
               <div className="flex justify-between gap-2 border-t border-border pt-3">
-                <Button variant="secondary" onClick={() => setEditing(detail)}>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    // Close the details first; otherwise its overlay sits on top of the edit form.
+                    setEditing(detail);
+                    setDetail(null);
+                  }}
+                >
                   Edit client
                 </Button>
                 <Button variant={detail.status === "ACTIVE" ? "danger" : "success"} disabled={busy} onClick={() => toggleStatus(detail)}>

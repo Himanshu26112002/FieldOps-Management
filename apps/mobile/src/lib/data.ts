@@ -27,7 +27,7 @@ import { followupInputSchema, type FollowupInput } from "@fieldops/shared-valida
 import { getFirebase } from "./firebase";
 import { clearCache, readCache, writeCache } from "./cache";
 import { ensureOnline, errorCode, isNetworkError, isOnline, withTimeout } from "./network";
-import { MAX_PHOTO_BYTES, MAX_PHOTOS_PER_VISIT } from "./photos";
+import { MAX_PHOTO_BYTES, MAX_PHOTOS_PER_VISIT, PHOTO_SLOT_IDS } from "./photos";
 
 interface GeoInput {
   latitude: number;
@@ -269,13 +269,17 @@ export async function addVisitPhoto(input: {
   sizeBytes: number;
   caption: string;
   currentPhotoCount: number;
+  /** Ids of the photos already on the visit; the new photo takes the first free slot. */
+  existingPhotoIds: string[];
 }): Promise<void> {
   const { db, auth } = fb();
   if (input.base64.length > 500_000) throw new Error("Photo is too large after compression (max ~375 KB).");
   if (input.sizeBytes > MAX_PHOTO_BYTES) throw new Error("Photo exceeds the 350 KB upload limit.");
   if (input.currentPhotoCount >= MAX_PHOTOS_PER_VISIT) throw new Error(`Maximum of ${MAX_PHOTOS_PER_VISIT} photos per visit reached.`);
+  const slot = PHOTO_SLOT_IDS.find((id) => !input.existingPhotoIds.includes(id));
+  if (!slot) throw new Error(`Maximum of ${MAX_PHOTOS_PER_VISIT} photos per visit reached.`);
   const batch = writeBatch(db);
-  batch.set(doc(collection(db, paths.visitPhotos(input.orgId, input.visitId))), {
+  batch.set(doc(db, paths.visitPhotos(input.orgId, input.visitId), slot), {
     orgId: input.orgId,
     visitId: input.visitId,
     contentType: "image/jpeg",

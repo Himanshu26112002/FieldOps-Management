@@ -8,7 +8,7 @@ import { OUTCOME_LABELS, VISIT_OUTCOMES, VISIT_STATUS_LABELS } from "@fieldops/s
 import { visitReportSchema } from "@fieldops/shared-validation";
 import { addVisitPhoto, cancelOwnVisit, fetchVisit, fetchVisitPhotos, removeVisitPhoto, saveDraft, startScheduledVisit, submitVisit } from "@/lib/data";
 import { captureGps } from "@/lib/location";
-import { ensureOnline } from "@/lib/network";
+import { ensureOnline, errorCode } from "@/lib/network";
 import { MAX_PHOTOS_PER_VISIT, pickCompressedPhoto, takeCompressedPhoto, type PhotoResult } from "@/lib/photos";
 import { useSession } from "@/lib/session";
 import { formatDateTime } from "@/lib/format";
@@ -59,7 +59,10 @@ function VisitScreen() {
       setError(null);
       await loadPhotos();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load this visit.");
+      // Another salesperson's visit is denied by the rules; do not show the raw Firestore message.
+      setError(errorCode(cause).endsWith("permission-denied")
+        ? "Visit not found or you do not have access."
+        : cause instanceof Error ? cause.message : "Could not load this visit.");
     } finally { setLoading(false); }
   }, [id, session, loadPhotos]);
 
@@ -118,7 +121,7 @@ function VisitScreen() {
       await ensureOnline();
       const photo = await source();
       if (!photo) return;
-      await addVisitPhoto({ visitId: visit.id, orgId: session.organization.id, base64: photo.base64, sizeBytes: photo.sizeBytes, caption: "", currentPhotoCount: Math.max(photos.length, visit.photoCount) });
+      await addVisitPhoto({ visitId: visit.id, orgId: session.organization.id, base64: photo.base64, sizeBytes: photo.sizeBytes, caption: "", currentPhotoCount: Math.max(photos.length, visit.photoCount), existingPhotoIds: photos.map((item) => item.id) });
       await load();
     } catch (cause) { setPhotoError(cause instanceof Error ? cause.message : "Could not add the photo."); }
     finally { setPhotoBusy(false); }

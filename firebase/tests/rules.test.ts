@@ -68,7 +68,7 @@ async function seed() {
         timezone: "Asia/Kolkata",
         currency: "INR",
         gpsAccuracyThresholdMeters: 100,
-        photoMaxPerVisit: 5,
+        photoMaxPerVisit: 2,
         photoMaxBytes: 300000,
         visitReminderLeadMinutes: 60,
         workdayStart: "09:00",
@@ -827,42 +827,63 @@ describe("photos and revisions", () => {
       }
       return batch.commit();
     };
+    const removePhoto = (photoId: string) => {
+      const db = as(USER_A);
+      const batch = writeBatch(db);
+      batch.delete(doc(db, `organizations/${ORG}/visits/v-adhoc/photos/${photoId}`));
+      batch.update(doc(db, `organizations/${ORG}/visits/v-adhoc`), {
+        photoCount: increment(-1),
+        updatedAt: serverTimestamp(),
+      });
+      return batch.commit();
+    };
     // A photo must be counted on the visit in the same batch, by exactly one.
-    await assertFails(addPhoto(USER_A, "p0", null));
+    await assertFails(addPhoto(USER_A, "photo-1", null));
     await assertFails(
-      setDoc(doc(as(USER_A), `organizations/${ORG}/visits/v-adhoc/photos/p0`), photo(USER_A)),
+      setDoc(doc(as(USER_A), `organizations/${ORG}/visits/v-adhoc/photos/photo-1`), photo(USER_A)),
     );
-    await assertSucceeds(addPhoto(USER_A, "p1", 1));
-    await assertFails(addPhoto(USER_B, "p2", 1));
+    // Only the two fixed slot ids are accepted.
+    await assertFails(addPhoto(USER_A, "p1", 1));
+    await assertFails(addPhoto(USER_A, "photo-3", 1));
+    // Two photos in one batch against a single increment are rejected.
+    {
+      const db = as(USER_A);
+      const batch = writeBatch(db);
+      batch.set(doc(db, `organizations/${ORG}/visits/v-adhoc/photos/photo-1`), photo(USER_A));
+      batch.set(doc(db, `organizations/${ORG}/visits/v-adhoc/photos/photo-2`), photo(USER_A));
+      batch.update(doc(db, `organizations/${ORG}/visits/v-adhoc`), {
+        photoCount: increment(1),
+        updatedAt: serverTimestamp(),
+      });
+      await assertFails(batch.commit());
+    }
+    await assertSucceeds(addPhoto(USER_A, "photo-1", 1));
+    await assertFails(addPhoto(USER_B, "photo-2", 1));
     // Deleting a photo must decrement the count in the same batch.
     {
       const db = as(USER_A);
       const bad = writeBatch(db);
-      bad.delete(doc(db, `organizations/${ORG}/visits/v-adhoc/photos/p1`));
+      bad.delete(doc(db, `organizations/${ORG}/visits/v-adhoc/photos/photo-1`));
       await assertFails(bad.commit());
     }
-    await assertSucceeds(addPhoto(USER_A, "p1b", 1));
-    {
-      const db = as(USER_A);
-      const ok = writeBatch(db);
-      ok.delete(doc(db, `organizations/${ORG}/visits/v-adhoc/photos/p1b`));
-      ok.update(doc(db, `organizations/${ORG}/visits/v-adhoc`), {
-        photoCount: increment(-1),
-        updatedAt: serverTimestamp(),
-      });
-      await assertSucceeds(ok.commit());
-    }
+    await assertSucceeds(addPhoto(USER_A, "photo-2", 1));
+    // At most two photos per visit: both slots are taken, so a third is refused.
+    await assertFails(addPhoto(USER_A, "photo-1", 1));
+    await assertFails(addPhoto(USER_A, "photo-2", 1));
+    // Freeing a slot lets the salesperson replace that photo.
+    await assertSucceeds(removePhoto("photo-2"));
+    await assertSucceeds(addPhoto(USER_A, "photo-2", 1));
     await assertFails(
-      setDoc(doc(as(USER_A), `organizations/${ORG}/visits/v-submitted/photos/p3`), {
+      setDoc(doc(as(USER_A), `organizations/${ORG}/visits/v-submitted/photos/photo-1`), {
         ...photo(USER_A),
         visitId: "v-submitted",
       }),
     );
     await assertSucceeds(
-      getDoc(doc(as(ADMIN), `organizations/${ORG}/visits/v-adhoc/photos/p1`)),
+      getDoc(doc(as(ADMIN), `organizations/${ORG}/visits/v-adhoc/photos/photo-1`)),
     );
     await assertFails(
-      getDoc(doc(as(USER_B), `organizations/${ORG}/visits/v-adhoc/photos/p1`)),
+      getDoc(doc(as(USER_B), `organizations/${ORG}/visits/v-adhoc/photos/photo-1`)),
     );
   });
 });

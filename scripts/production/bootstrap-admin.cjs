@@ -35,7 +35,7 @@ async function main() {
             timezone: str("Asia/Kolkata"),
             currency: str("INR"),
             gpsAccuracyThresholdMeters: int(100),
-            photoMaxPerVisit: int(5),
+            photoMaxPerVisit: int(2),
             photoMaxBytes: int(300000),
             visitReminderLeadMinutes: int(60),
             workdayStart: str("09:00"),

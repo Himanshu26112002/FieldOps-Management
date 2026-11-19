@@ -7,7 +7,9 @@ export interface PhotoResult {
 }
 
 export const MAX_PHOTO_BYTES = 350_000;
-export const MAX_PHOTOS_PER_VISIT = 5;
+export const MAX_PHOTOS_PER_VISIT = 2;
+/** The rules accept only these photo ids, which is what caps a visit at two photos. */
+export const PHOTO_SLOT_IDS = ["photo-1", "photo-2"] as const;
 
 // First pass keeps the agreed quality; the retry trades detail for size before giving up.
 const COMPRESSION_STEPS = [

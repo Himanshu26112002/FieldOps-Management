@@ -403,7 +403,7 @@ export const DEFAULT_ORG_SETTINGS: OrganizationSettings = {
   timezone: "Asia/Kolkata",
   currency: "INR",
   gpsAccuracyThresholdMeters: 100,
-  photoMaxPerVisit: 5,
+  photoMaxPerVisit: 2,
   photoMaxBytes: 300_000,
   visitReminderLeadMinutes: 60,
   workdayStart: "09:00",

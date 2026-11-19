@@ -115,6 +115,8 @@ function Shell({ children }: { children: React.ReactNode }) {
     { title: "Workspace", items: filteredNav.filter((item) => ["/notifications", "/settings"].includes(item.href)) },
   ].filter((section) => section.items.length > 0);
   const current = nav.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
+  // Salespeople only reach the pages in their reduced navigation; admin pages are blocked even by direct URL.
+  const allowed = pathname === "/" || filteredNav.some((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
   const today = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
   return (
@@ -231,7 +233,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 
       <main className="mx-auto w-full max-w-7xl min-w-0 space-y-6 px-4 py-8 sm:px-8">
         {error ? <Alert tone="warning">{error}</Alert> : null}
-        {children}
+        {allowed ? children : <Alert tone="warning">This page is only available to administrators.</Alert>}
       </main>
     </div>
   );

@@ -287,7 +287,7 @@ async function seed() {
       timezone: "Asia/Kolkata",
       currency: "INR",
       gpsAccuracyThresholdMeters: 100,
-      photoMaxPerVisit: 5,
+      photoMaxPerVisit: 2,
       photoMaxBytes: 300000,
       visitReminderLeadMinutes: 60,
       workdayStart: "09:00",

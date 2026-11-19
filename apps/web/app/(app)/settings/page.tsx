@@ -36,7 +36,8 @@ export default function SettingsPage() {
       timezone: settings.timezone,
       currency: settings.currency,
       gpsAccuracyThresholdMeters: settings.gpsAccuracyThresholdMeters,
-      photoMaxPerVisit: settings.photoMaxPerVisit,
+      // Older organizations were created with a higher limit than the rules now allow.
+      photoMaxPerVisit: Math.min(settings.photoMaxPerVisit, 2),
       photoMaxBytes: settings.photoMaxBytes,
       visitReminderLeadMinutes: settings.visitReminderLeadMinutes,
       workdayStart: settings.workdayStart,
@@ -162,11 +163,11 @@ export default function SettingsPage() {
                   onChange={(event) => setOrg({ ...org, visitReminderLeadMinutes: Number(event.target.value) })}
                 />
               </Field>
-              <Field label="Max photos per visit">
+              <Field label="Max photos per visit" hint="2 at most">
                 <Input
                   type="number"
                   min={1}
-                  max={10}
+                  max={2}
                   value={org.photoMaxPerVisit}
                   onChange={(event) => setOrg({ ...org, photoMaxPerVisit: Number(event.target.value) })}
                 />

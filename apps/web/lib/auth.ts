@@ -5,7 +5,6 @@ import { getFirebase } from "./firebase/client";
 export const NOT_PROVISIONED_MESSAGE = "Your account is not provisioned or has been deactivated. Contact your administrator.";
 /** sessionStorage key carrying why the user was signed out, shown once on /login. */
 export const LOGIN_REASON_KEY = "fieldops.loginReason";
-export const ADMIN_ONLY_MESSAGE = "This dashboard is for administrators. Salespeople should use the FieldOps mobile app.";
 
 export interface Session {
   uid: string;
@@ -35,9 +34,7 @@ export async function fetchMyProfile(): Promise<Session> {
   if (membership.orgId !== orgId) {
     throw new Error("Your account belongs to a different organization.");
   }
-  if (membership.role !== "ADMIN") {
-    throw new Error(ADMIN_ONLY_MESSAGE);
-  }
+  // Salespeople may also sign in here; the layout limits them to the pages in their reduced navigation.
 
   const [profileSnap, orgSnap] = await Promise.all([
     getDoc(doc(db, `organizations/${orgId}/users/${user.uid}`)),

@@ -497,7 +497,7 @@ service cloud.firestore {
           || unchanged(['revisionCount']))
         // photoCount moves by at most one per write (photo create/delete rules pin the exact value).
         && request.resource.data.photoCount >= 0
-        && request.resource.data.photoCount <= 10
+        && request.resource.data.photoCount <= 2
         && request.resource.data.photoCount >= resource.data.photoCount - 1
         && request.resource.data.photoCount <= resource.data.photoCount + 1
         && (unchanged(['photoCount']) || resource.data.status in ['IN_PROGRESS', 'RETURNED'])
@@ -590,7 +590,15 @@ service cloud.firestore {
           && visitData(orgId, visitId).status in ['IN_PROGRESS', 'RETURNED'];
       }
 
+      function filledPhotoSlotsAfter() {
+        return (existsAfter(/databases/$(database)/documents/organizations/$(orgId)/visits/$(visitId)/photos/photo-1) ? 1 : 0)
+          + (existsAfter(/databases/$(database)/documents/organizations/$(orgId)/visits/$(visitId)/photos/photo-2) ? 1 : 0);
+      }
+
+      // A visit has two fixed photo slots. Ids are pinned to them so that even a batch which
+      // creates several photos against a single photoCount increment can never hold more than two.
       allow create: if canWritePhoto()
+        && photoId in ['photo-1', 'photo-2']
         && request.resource.data.keys().hasOnly([
           'orgId', 'visitId', 'contentType', 'data', 'sizeBytes', 'caption', 'uploadedBy', 'createdAt'
         ])
@@ -611,7 +619,9 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time
         // Every photo is counted: the visit's photoCount rises by exactly one in the same batch,
         // and the visit update rule caps photoCount, which caps the number of photos.
-        && getAfter(visitPath(orgId, visitId)).data.photoCount == visitData(orgId, visitId).photoCount + 1;
+        && getAfter(visitPath(orgId, visitId)).data.photoCount == visitData(orgId, visitId).photoCount + 1
+        // ...and the count matches the filled slots, so one batch cannot add two photos for one increment.
+        && getAfter(visitPath(orgId, visitId)).data.photoCount == filledPhotoSlotsAfter();
 
       allow update: if false;
 
