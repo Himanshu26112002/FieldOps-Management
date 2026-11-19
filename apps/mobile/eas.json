@@ -6,12 +6,8 @@
   "build": {
     "base": {
       "node": "24.12.0",
+      "environment": "production",
       "env": {
-        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyCT0pjH2wCnZELSnrojLMp1uPixOG56Hyc",
-        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "fieldops---prod.firebaseapp.com",
-        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "fieldops---prod",
-        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:226782792648:web:32d715f65a9b773ec24efd",
-        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "226782792648",
         "EXPO_PUBLIC_FIELDOPS_ORG_ID": "main",
         "EXPO_PUBLIC_USE_FIREBASE_EMULATORS": "false"
       }
